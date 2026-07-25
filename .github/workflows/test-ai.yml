@@ -1,0 +1,21 @@
+name: Test AI inference
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  models: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/ai-inference@v1
+        id: inference
+        with:
+          model: openai/gpt-4o-mini
+          max-tokens: 10
+          prompt: "Responda com exatamente uma palavra: patch"
+
+      - run: echo "resposta = ${{ steps.inference.outputs.response }}"
