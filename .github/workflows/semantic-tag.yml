@@ -57,9 +57,14 @@ jobs:
         run: |
           {
             echo "diff<<EOF_DIFF_BOUNDARY"
+            # gpt-4o-mini limita a requisição a 8000 tokens (prompt +
+            # system-prompt). ~20000 caracteres fica bem dentro disso
+            # mesmo em código denso (~3 chars/token no pior caso) — 60000
+            # já estourou de verdade num repo sem tag anterior (diff
+            # "desde o primeiro commit" inteiro).
             git diff "${{ steps.last_tag.outputs.range }}" -- . \
               ':(exclude)*.lock' ':(exclude)package-lock.json' \
-              | head -c 60000
+              | head -c 20000
             echo "EOF_DIFF_BOUNDARY"
           } >> "$GITHUB_OUTPUT"
 
