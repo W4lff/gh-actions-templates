@@ -1,0 +1,118 @@
+name: Semantic tag (reusable)
+
+# Chamado por outros repos via
+# `uses: W4lff/gh-actions-templates/.github/workflows/semantic-tag.yml@main`
+# depois do(s) job(s) de build, num push pra main. Trunk-based: em vez
+# de depender de convenção de mensagem de commit (Conventional Commits)
+# pra decidir o bump de versão, uma IA (GitHub Models, sem precisar de
+# API key própria — só a permissão `models: read`) lê o diff desde a
+# última tag e classifica como major/minor/patch segundo semver.org.
+#
+# Trade-off honesto: classificação por IA não é 100% determinística como
+# parsear prefixo de commit (feat:/fix:/BREAKING CHANGE). Mitigado com
+# max-tokens curto (força resposta de uma palavra só) e um fallback pra
+# "patch" se a resposta vier fora do esperado — na dúvida, o bump mais
+# conservador.
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "Modelo do GitHub Models usado pra classificar o bump"
+        required: false
+        type: string
+        default: "openai/gpt-4o-mini"
+
+permissions:
+  contents: write
+  models: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determinar última tag e intervalo do diff
+        id: last_tag
+        run: |
+          TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          if [ -z "$TAG" ]; then
+            TAG="v0.0.0"
+            FIRST=$(git rev-list --max-parents=0 HEAD)
+            RANGE="${FIRST}..HEAD"
+          else
+            RANGE="${TAG}..HEAD"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "range=$RANGE" >> "$GITHUB_OUTPUT"
+
+      - name: Gerar diff desde a última tag
+        id: diff
+        run: |
+          {
+            echo "diff<<EOF_DIFF_BOUNDARY"
+            git diff "${{ steps.last_tag.outputs.range }}" -- . \
+              ':(exclude)*.lock' ':(exclude)package-lock.json' \
+              | head -c 60000
+            echo "EOF_DIFF_BOUNDARY"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Classificar impacto semver (GitHub Models)
+        id: classify
+        uses: actions/ai-inference@v1
+        with:
+          model: ${{ inputs.model }}
+          max-tokens: 10
+          system-prompt: |
+            Você classifica um diff de código segundo Semantic Versioning
+            (semver.org). Responda com EXATAMENTE uma palavra, em minúsculas,
+            sem pontuação e sem explicação: major, minor ou patch.
+
+            major: a mudança remove ou quebra uma API, rota, campo ou
+            comportamento existente de forma incompatível.
+            minor: adiciona funcionalidade nova de forma compatível
+            (nova rota, novo campo opcional, nova feature), sem quebrar nada.
+            patch: correção de bug, refactor interno, mudança de
+            infraestrutura/config, documentação, teste, ou qualquer coisa que
+            não muda comportamento observável de fora.
+
+            Se o diff estiver vazio, for só documentação/testes, ou você não
+            tiver certeza, responda patch.
+          prompt: ${{ steps.diff.outputs.diff }}
+
+      - name: Validar classificação e calcular nova versão
+        id: bump
+        run: |
+          RAW="${{ steps.classify.outputs.response }}"
+          BUMP=$(echo "$RAW" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]' | grep -oE '^(major|minor|patch)$' || true)
+          if [ -z "$BUMP" ]; then
+            echo "Resposta da IA fora do esperado ('$RAW') — usando patch como fallback."
+            BUMP="patch"
+          fi
+          echo "Classificação: $BUMP (resposta bruta: '$RAW')"
+
+          CURRENT="${{ steps.last_tag.outputs.tag }}"
+          CURRENT="${CURRENT#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Nova tag: $NEW_TAG"
+
+      - name: Criar e publicar a tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.bump.outputs.tag }}" \
+            -m "${{ steps.bump.outputs.tag }} (${{ steps.bump.outputs.bump }}, classificado por IA via GitHub Models)"
+          git push origin "${{ steps.bump.outputs.tag }}"

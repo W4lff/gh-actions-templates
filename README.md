@@ -58,3 +58,35 @@ jobs:
 Repos com mais de uma imagem (ex: `tasks-app`, que builda API e front)
 chamam o template uma vez por imagem, com `name` diferente pra cada
 (evita colisão de nome de artefato entre os dois builds no mesmo run).
+
+## Tag semântica automática (`semantic-tag.yml`)
+
+Trunk-based: a cada push em `main` que passa no build, uma tag `vX.Y.Z`
+é criada automaticamente. Em vez de exigir Conventional Commits dos
+contribuidores, uma IA (GitHub Models — `models: read`, sem precisar de
+API key própria) lê o diff desde a última tag e classifica o impacto
+como `major`, `minor` ou `patch` segundo semver.org. Resposta fora do
+esperado cai em `patch` (o bump mais conservador).
+
+```yaml
+jobs:
+  build:
+    uses: W4lff/gh-actions-templates/.github/workflows/devsecops-build.yml@main
+    with: { name: minha-app, image: ghcr.io/w4lff/minha-app, context: ., node: true }
+    permissions: { contents: read, packages: write, security-events: write }
+    secrets: inherit
+
+  tag:
+    needs: build
+    uses: W4lff/gh-actions-templates/.github/workflows/semantic-tag.yml@main
+    permissions: { contents: write, models: read }
+
+  deploy:
+    needs: [build, tag]
+    ...
+```
+
+Trade-off honesto: classificação por IA não é 100% determinística como
+parsear prefixo de commit. Pra esse lab, o benefício (não depender de
+disciplina de commit message) compensou o risco (mitigado com resposta
+curta forçada e fallback pra patch).
