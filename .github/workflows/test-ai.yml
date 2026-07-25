@@ -5,17 +5,18 @@ on:
 
 permissions:
   contents: read
-  models: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      - run: echo "job iniciou ok"
       - uses: actions/ai-inference@v1
         id: inference
         with:
           model: openai/gpt-4o-mini
           max-tokens: 10
           prompt: "Responda com exatamente uma palavra: patch"
+        continue-on-error: true
 
       - run: echo "resposta = ${{ steps.inference.outputs.response }}"
