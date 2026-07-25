@@ -1,0 +1,147 @@
+name: DevSecOps build (reusable)
+
+# Chamado por outros repos via `uses: W4lff/gh-actions-templates/.github/workflows/devsecops-build.yml@main`.
+# Cobre tudo que acontece ANTES do deploy: segredo, dependência, SAST,
+# testes/cobertura, imagem, vulnerabilidade de imagem, SBOM, push. O
+# passo de deploy (nomad job run) fica no repo de cada app, porque
+# varia demais entre eles pra valer a pena forçar num molde só.
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: "Nome curto do serviço (ex: tasks-api) — usado só pra nomear artefatos sem colidir quando o mesmo repo builda mais de uma imagem"
+        required: true
+        type: string
+      image:
+        description: "Imagem completa (ex: ghcr.io/w4lff/tasks-api)"
+        required: true
+        type: string
+      context:
+        description: "Diretório de build (Dockerfile + código)"
+        required: false
+        type: string
+        default: "."
+      node:
+        description: "Se true, roda npm ci/audit/test/CodeQL-javascript nesse contexto"
+        required: false
+        type: boolean
+        default: false
+      trivy_severity:
+        description: "Severidades que derrubam o build no scan de imagem"
+        required: false
+        type: string
+        default: "CRITICAL,HIGH"
+    outputs:
+      image_tag:
+        description: "Tag publicada (sha do commit)"
+        value: ${{ jobs.build.outputs.image_tag }}
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Secret scanning — teria pego o vazamento de senha do Harbor
+      # antes do commit chegar no repo.
+      - name: Instalar gitleaks
+        run: |
+          curl -sSL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          tar xzf gitleaks.tar.gz gitleaks
+          sudo install gitleaks /usr/local/bin/gitleaks
+
+      - name: Secret scan (gitleaks)
+        run: gitleaks detect --source . --redact -v --exit-code 1
+
+      # 2. Dependências (só quando há package.json nesse contexto)
+      - name: Setup Node
+        if: inputs.node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Instalar dependências
+        if: inputs.node
+        working-directory: ${{ inputs.context }}
+        run: npm install
+
+      - name: Auditoria de dependências (npm audit)
+        if: inputs.node
+        working-directory: ${{ inputs.context }}
+        run: npm audit --audit-level=high
+
+      # 3. SAST — CodeQL. Upload de resultado pro Security tab exige
+      # GitHub Advanced Security em repo privado; em repo privado sem
+      # GHAS a análise roda mas o upload falha — por isso
+      # continue-on-error na análise, não silenciamos o npm audit nem
+      # o gitleaks, só essa etapa específica.
+      - name: Inicializar CodeQL
+        if: inputs.node
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          source-root: ${{ inputs.context }}
+
+      - name: Analisar com CodeQL
+        if: inputs.node
+        uses: github/codeql-action/analyze@v3
+        continue-on-error: true
+
+      # 4. Testes + cobertura
+      - name: Testes com cobertura
+        if: inputs.node
+        working-directory: ${{ inputs.context }}
+        run: npm test
+
+      - name: Publicar relatório de cobertura
+        if: inputs.node
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ inputs.name }}
+          path: ${{ inputs.context }}/coverage
+          if-no-files-found: ignore
+
+      # 5. Build da imagem
+      - name: Login no ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build da imagem
+        run: docker build -t ${{ inputs.image }}:${{ github.sha }} -t ${{ inputs.image }}:latest ${{ inputs.context }}
+
+      # 6. Scan de vulnerabilidades na imagem
+      - name: Scan de imagem (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image }}:${{ github.sha }}
+          severity: ${{ inputs.trivy_severity }}
+          exit-code: "1"
+          ignore-unfixed: true
+
+      # 7. SBOM — inventário de tudo que foi parar na imagem
+      - name: Gerar SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.image }}:${{ github.sha }}
+          output-file: sbom-${{ inputs.name }}.spdx.json
+          upload-artifact: false
+
+      - name: Publicar SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.name }}
+          path: sbom-${{ inputs.name }}.spdx.json
+
+      # 8. Push — só depois de passar em tudo acima
+      - name: Push da imagem
+        run: |
+          docker push ${{ inputs.image }}:${{ github.sha }}
+          docker push ${{ inputs.image }}:latest
