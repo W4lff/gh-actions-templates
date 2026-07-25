@@ -60,7 +60,14 @@ jobs:
           sudo install gitleaks /usr/local/bin/gitleaks
 
       - name: Secret scan (gitleaks)
-        run: gitleaks detect --source . --redact -v --exit-code 1
+        # --no-git: escaneia o conteúdo do checkout, não o histórico de
+        # commits. Sem isso o fingerprint de cada achado inclui o SHA do
+        # commit — e como o checkout é raso (fetch-depth padrão = 1),
+        # esse SHA muda a cada push, invalidando qualquer entrada de
+        # .gitleaksignore no push seguinte. Histórico completo já foi
+        # auditado manualmente uma vez (ver content/09-harbor.md); aqui
+        # o objetivo é só barrar segredo novo antes do merge.
+        run: gitleaks detect --source . --no-git --redact -v --exit-code 1
 
       # 2. Dependências (só quando há package.json nesse contexto)
       - name: Setup Node
