@@ -29,7 +29,10 @@ permissions:
 
 jobs:
   tag:
-    runs-on: ubuntu-latest
+    # self-hosted, não ubuntu-latest: não consome minuto pago de runner
+    # hospedado pelo GitHub. Só precisa de saída HTTPS normal (github.com
+    # + API de inferência do GitHub Models), que o runner já tem.
+    runs-on: [self-hosted, hashicorp-lab]
     steps:
       - uses: actions/checkout@v4
         with:
