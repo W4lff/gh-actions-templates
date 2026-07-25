@@ -62,9 +62,19 @@ jobs:
             # mesmo em código denso (~3 chars/token no pior caso) — 60000
             # já estourou de verdade num repo sem tag anterior (diff
             # "desde o primeiro commit" inteiro).
+            #
+            # O `echo` depois do `head -c` é essencial, não cosmético:
+            # head -c corta no meio da última linha quando o diff é maior
+            # que o limite, e sem a quebra de linha o delimitador
+            # "EOF_DIFF_BOUNDARY" abaixo gruda no texto truncado em vez
+            # de ficar em sua própria linha — o parser do GITHUB_OUTPUT
+            # exige o delimitador isolado, e sem isso falha com "Invalid
+            # value. Matching delimiter not found" (só acontece quando o
+            # diff é grande o bastante pra realmente ser truncado).
             git diff "${{ steps.last_tag.outputs.range }}" -- . \
               ':(exclude)*.lock' ':(exclude)package-lock.json' \
               | head -c 20000
+            echo
             echo "EOF_DIFF_BOUNDARY"
           } >> "$GITHUB_OUTPUT"
 
